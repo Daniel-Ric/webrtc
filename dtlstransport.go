@@ -215,6 +215,11 @@ func (t *DTLSTransport) GetRemoteCertificate() []byte {
 func (t *DTLSTransport) wantSRTP() error {
 	t.lock.Lock()
 	defer t.lock.Unlock()
+	// A data-only peer can complete DTLS without negotiating use_srtp.
+	// If media is requested later, it still needs an actual SRTP profile.
+	if t.conn != nil && !t.srtpCanStart {
+		return ErrNoSRTPProtectionProfile
+	}
 	if t.srtpWanted {
 		return nil
 	}
@@ -606,11 +611,14 @@ func (t *DTLSTransport) handshakeDTLS(dtlsConn *dtls.Conn) error {
 
 func (t *DTLSTransport) completeStart(dtlsConn *dtls.Conn) error {
 	srtpProtectionProfile, err := srtpProtectionProfileFromDTLSConn(dtlsConn)
+	_, hasSRTPProfile := dtlsConn.SelectedSRTPProtectionProfile()
 
 	t.lock.Lock()
 	defer t.lock.Unlock()
 
-	if err != nil {
+	// SCTP data channels need authenticated DTLS, but do not use SRTP.
+	// Reject unsupported advertised profiles and missing profiles for media.
+	if err != nil && (hasSRTPProfile || t.srtpWanted) {
 		t.onStateChange(DTLSTransportStateFailed)
 
 		return err
@@ -622,7 +630,7 @@ func (t *DTLSTransport) completeStart(dtlsConn *dtls.Conn) error {
 
 	// SRTP starts once media is negotiated, so a connection with only data
 	// channels runs no SRTP sessions.
-	t.srtpCanStart = true
+	t.srtpCanStart = err == nil
 	if t.srtpWanted {
 		return t.startSRTP()
 	}
